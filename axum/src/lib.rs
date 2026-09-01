@@ -1,3 +1,4 @@
+#![cfg(feature = "p2")]
 //! Support for the [`axum`] web server framework in wasi-http components, via
 //! [`wstd`].
 //!

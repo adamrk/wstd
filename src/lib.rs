@@ -18,7 +18,7 @@
 //! **TCP echo server**
 //!
 //! ```rust,no_run
-#![doc = include_str!("../examples/tcp_echo_server.rs")]
+#![cfg_attr(feature = "p2", doc = include_str!("../examples/tcp_echo_server.rs"))]
 //! ```
 //!
 //! **HTTP Client**
@@ -30,7 +30,7 @@
 //! **HTTP Server**
 //!
 //! ```rust,no_run
-#![doc = include_str!("../examples/http_server.rs")]
+#![cfg_attr(feature = "p2", doc = include_str!("../examples/http_server.rs"))]
 //! ```
 //!
 //! # Design Decisions
@@ -55,30 +55,52 @@
 //! These are unique capabilities provided by WASI 0.2, and because this library
 //! is specific to that are exposed from here.
 
+// Exactly one WASI backend must be selected. See the `p2`/`p3` features.
+#[cfg(all(feature = "p2", feature = "p3"))]
+compile_error!(
+    "the `p2` and `p3` features are mutually exclusive — enable exactly one WASI backend"
+);
+#[cfg(not(any(feature = "p2", feature = "p3")))]
+compile_error!("exactly one of the `p2` or `p3` features must be enabled");
+
+#[cfg(feature = "p2")]
 pub mod future;
+#[cfg(feature = "p2")]
 #[macro_use]
 pub mod http;
+#[cfg(feature = "p2")]
 pub mod io;
 pub mod iter;
+#[cfg(feature = "p2")]
 pub mod net;
+#[cfg(feature = "p2")]
 pub mod rand;
+#[cfg(feature = "p2")]
 pub mod runtime;
+#[cfg(feature = "p2")]
 pub mod task;
+#[cfg(feature = "p2")]
 pub mod time;
 
-pub use wstd_macro::attr_macro_http_server as http_server;
-pub use wstd_macro::attr_macro_main as main;
-pub use wstd_macro::attr_macro_test as test;
+#[cfg(feature = "p2")]
+pub use wstd_macro::{
+    attr_macro_http_server as http_server, attr_macro_main as main, attr_macro_test as test,
+};
 
-// Re-export the wasip2 crate for use only by `wstd-macro` macros. The proc
-// macros need to generate code that uses these definitions, but we don't want
-// to treat it as part of our public API with regards to semver, so we keep it
-// under `__internal` as well as doc(hidden) to indicate it is private.
+// Re-export the active WASI backend crate for use only by `wstd-macro` macros.
+// The proc macros need to generate code that uses these definitions, but we
+// don't want to treat it as part of our public API with regards to semver, so
+// we keep it under `__internal` as well as doc(hidden) to indicate it is
+// private.
 #[doc(hidden)]
 pub mod __internal {
+    #[cfg(feature = "p2")]
     pub use wasip2;
+    #[cfg(feature = "p3")]
+    pub use wasip3;
 }
 
+#[cfg(feature = "p2")]
 pub mod prelude {
     pub use crate::future::FutureExt as _;
     pub use crate::io::AsyncRead as _;
