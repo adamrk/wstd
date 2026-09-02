@@ -26,7 +26,7 @@ impl AsyncInputStream {
             stream,
         }
     }
-    fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<()> {
+    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<()> {
         // Lazily initialize the AsyncPollable
         let subscription = self
             .subscription
@@ -43,12 +43,11 @@ impl AsyncInputStream {
         }
     }
     /// Await for read readiness.
-    async fn ready(&self) {
+    async fn ready(&mut self) {
         poll_fn(|cx| self.poll_ready(cx)).await
     }
     /// Asynchronously read from the input stream.
-    /// This method is the same as [`AsyncRead::read`], but doesn't require a `&mut self`.
-    pub async fn read(&self, buf: &mut [u8]) -> std::io::Result<usize> {
+    pub async fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         let read = loop {
             self.ready().await;
             // Ideally, the ABI would be able to read directly into buf.
@@ -76,7 +75,7 @@ impl AsyncInputStream {
     /// Move the entire contents of an input stream directly into an output
     /// stream, until the input stream has closed. This operation is optimized
     /// to avoid copying stream contents into and out of memory.
-    pub async fn copy_to(&self, writer: &AsyncOutputStream) -> std::io::Result<u64> {
+    pub async fn copy_to(&mut self, writer: &mut AsyncOutputStream) -> std::io::Result<u64> {
         let mut written = 0;
         loop {
             self.ready().await;
@@ -128,7 +127,7 @@ impl AsyncRead for AsyncInputStream {
     }
 
     #[inline]
-    fn as_async_input_stream(&self) -> Option<&AsyncInputStream> {
+    fn as_async_input_stream(&mut self) -> Option<&mut AsyncInputStream> {
         Some(self)
     }
 }
@@ -150,9 +149,10 @@ impl AsyncInputChunkStream {
 impl futures_lite::stream::Stream for AsyncInputChunkStream {
     type Item = Result<Vec<u8>, std::io::Error>;
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        match self.stream.poll_ready(cx) {
+        let this = self.get_mut();
+        match this.stream.poll_ready(cx) {
             Poll::Pending => Poll::Pending,
-            Poll::Ready(()) => match self.stream.stream.read(self.chunk_size as u64) {
+            Poll::Ready(()) => match this.stream.stream.read(this.chunk_size as u64) {
                 Ok(r) if r.is_empty() => Poll::Pending,
                 Ok(r) => Poll::Ready(Some(Ok(r))),
                 Err(StreamError::LastOperationFailed(err)) => {
@@ -233,7 +233,7 @@ impl AsyncOutputStream {
         }
     }
     /// Await write readiness.
-    async fn ready(&self) {
+    async fn ready(&mut self) {
         // Lazily initialize the AsyncPollable
         let subscription = self
             .subscription
@@ -241,15 +241,14 @@ impl AsyncOutputStream {
         // Wait on readiness
         subscription.wait_for().await;
     }
-    /// Asynchronously write to the output stream. This method is the same as
-    /// [`AsyncWrite::write`], but doesn't require a `&mut self`.
+    /// Asynchronously write to the output stream.
     ///
     /// Awaits for write readiness, and then performs at most one write to the
     /// output stream. Returns how much of the argument `buf` was written, or
     /// a `std::io::Error` indicating either an error returned by the stream write
     /// using the debug string provided by the WASI error, or else that the,
     /// indicated by `std::io::ErrorKind::ConnectionReset`.
-    pub async fn write(&self, buf: &[u8]) -> std::io::Result<usize> {
+    pub async fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         // Loops at most twice.
         loop {
             match self.stream.check_write() {
@@ -280,9 +279,8 @@ impl AsyncOutputStream {
         }
     }
 
-    /// Asynchronously write to the output stream. This method is the same as
-    /// [`AsyncWrite::write_all`], but doesn't require a `&mut self`.
-    pub async fn write_all(&self, buf: &[u8]) -> std::io::Result<()> {
+    /// Asynchronously write to the output stream.
+    pub async fn write_all(&mut self, buf: &[u8]) -> std::io::Result<()> {
         let mut to_write = &buf[0..];
         loop {
             let bytes_written = self.write(to_write).await?;
@@ -297,14 +295,11 @@ impl AsyncOutputStream {
     /// awaits until the flush is complete and the output stream is ready for
     /// writing again.
     ///
-    /// This method is the same as [`AsyncWrite::flush`], but doesn't require
-    /// a `&mut self`.
-    ///
     /// Fails with a `std::io::Error` indicating either an error returned by
     /// the stream flush, using the debug string provided by the WASI error,
     /// or else that the stream is closed, indicated by
     /// `std::io::ErrorKind::ConnectionReset`.
-    pub async fn flush(&self) -> std::io::Result<()> {
+    pub async fn flush(&mut self) -> std::io::Result<()> {
         match self.stream.flush() {
             Ok(()) => {
                 self.ready().await;
@@ -330,7 +325,7 @@ impl AsyncWrite for AsyncOutputStream {
     }
 
     #[inline]
-    fn as_async_output_stream(&self) -> Option<&AsyncOutputStream> {
+    fn as_async_output_stream(&mut self) -> Option<&mut AsyncOutputStream> {
         Some(self)
     }
 }
