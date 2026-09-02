@@ -3,7 +3,7 @@ use crate::http::{
     error::Context as _,
     fields::{header_map_from_wasi, header_map_to_wasi},
 };
-use crate::io::{AsyncInputStream, AsyncOutputStream};
+use crate::io::{AsyncInputStream, AsyncOutputStream, AsyncWrite};
 use crate::runtime::{AsyncPollable, Reactor, WaitFor};
 
 pub use ::http_body::{Body as HttpBody, Frame, SizeHint};

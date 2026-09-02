@@ -46,32 +46,6 @@ impl AsyncInputStream {
     async fn ready(&mut self) {
         poll_fn(|cx| self.poll_ready(cx)).await
     }
-    /// Asynchronously read from the input stream.
-    pub async fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        let read = loop {
-            self.ready().await;
-            // Ideally, the ABI would be able to read directly into buf.
-            // However, with the default generated bindings, it returns a
-            // newly allocated vec, which we need to copy into buf.
-            match self.stream.read(buf.len() as u64) {
-                // A read of 0 bytes from WASI's `read` doesn't mean
-                // end-of-stream as it does in Rust. However, `self.ready()`
-                // cannot guarantee that at least one byte is ready for
-                // reading, so in this case we try again.
-                Ok(r) if r.is_empty() => continue,
-                Ok(r) => break r,
-                // 0 bytes from Rust's `read` means end-of-stream.
-                Err(StreamError::Closed) => return Ok(0),
-                Err(StreamError::LastOperationFailed(err)) => {
-                    return Err(std::io::Error::other(err.to_debug_string()));
-                }
-            }
-        };
-        let len = read.len();
-        buf[0..len].copy_from_slice(&read);
-        Ok(len)
-    }
-
     /// Move the entire contents of an input stream directly into an output
     /// stream, until the input stream has closed. This operation is optimized
     /// to avoid copying stream contents into and out of memory.
@@ -123,7 +97,28 @@ impl AsyncInputStream {
 
 impl AsyncRead for AsyncInputStream {
     async fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        Self::read(self, buf).await
+        let read = loop {
+            self.ready().await;
+            // Ideally, the ABI would be able to read directly into buf.
+            // However, with the default generated bindings, it returns a
+            // newly allocated vec, which we need to copy into buf.
+            match self.stream.read(buf.len() as u64) {
+                // A read of 0 bytes from WASI's `read` doesn't mean
+                // end-of-stream as it does in Rust. However, `self.ready()`
+                // cannot guarantee that at least one byte is ready for
+                // reading, so in this case we try again.
+                Ok(r) if r.is_empty() => continue,
+                Ok(r) => break r,
+                // 0 bytes from Rust's `read` means end-of-stream.
+                Err(StreamError::Closed) => return Ok(0),
+                Err(StreamError::LastOperationFailed(err)) => {
+                    return Err(std::io::Error::other(err.to_debug_string()));
+                }
+            }
+        };
+        let len = read.len();
+        buf[0..len].copy_from_slice(&read);
+        Ok(len)
     }
 
     #[inline]
@@ -241,14 +236,11 @@ impl AsyncOutputStream {
         // Wait on readiness
         subscription.wait_for().await;
     }
-    /// Asynchronously write to the output stream.
-    ///
-    /// Awaits for write readiness, and then performs at most one write to the
-    /// output stream. Returns how much of the argument `buf` was written, or
-    /// a `std::io::Error` indicating either an error returned by the stream write
-    /// using the debug string provided by the WASI error, or else that the,
-    /// indicated by `std::io::ErrorKind::ConnectionReset`.
-    pub async fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+}
+
+impl AsyncWrite for AsyncOutputStream {
+    // Required methods
+    async fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         // Loops at most twice.
         loop {
             match self.stream.check_write() {
@@ -278,28 +270,7 @@ impl AsyncOutputStream {
             }
         }
     }
-
-    /// Asynchronously write to the output stream.
-    pub async fn write_all(&mut self, buf: &[u8]) -> std::io::Result<()> {
-        let mut to_write = &buf[0..];
-        loop {
-            let bytes_written = self.write(to_write).await?;
-            to_write = &to_write[bytes_written..];
-            if to_write.is_empty() {
-                return Ok(());
-            }
-        }
-    }
-
-    /// Asyncronously flush the output stream. Initiates a flush, and then
-    /// awaits until the flush is complete and the output stream is ready for
-    /// writing again.
-    ///
-    /// Fails with a `std::io::Error` indicating either an error returned by
-    /// the stream flush, using the debug string provided by the WASI error,
-    /// or else that the stream is closed, indicated by
-    /// `std::io::ErrorKind::ConnectionReset`.
-    pub async fn flush(&mut self) -> std::io::Result<()> {
+    async fn flush(&mut self) -> std::io::Result<()> {
         match self.stream.flush() {
             Ok(()) => {
                 self.ready().await;
@@ -312,16 +283,6 @@ impl AsyncOutputStream {
                 Err(std::io::Error::other(err.to_debug_string()))
             }
         }
-    }
-}
-
-impl AsyncWrite for AsyncOutputStream {
-    // Required methods
-    async fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        Self::write(self, buf).await
-    }
-    async fn flush(&mut self) -> std::io::Result<()> {
-        Self::flush(self).await
     }
 
     #[inline]
