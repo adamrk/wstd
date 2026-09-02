@@ -87,6 +87,9 @@ pub use wstd_macro::{
     attr_macro_http_server as http_server, attr_macro_main as main, attr_macro_test as test,
 };
 
+#[cfg(p3)]
+pub use wstd_macro::{attr_macro_main_p3 as main, attr_macro_test_p3 as test};
+
 // Re-export the active WASI backend crate for use only by `wstd-macro` macros.
 // The proc macros need to generate code that uses these definitions, but we
 // don't want to treat it as part of our public API with regards to semver, so
