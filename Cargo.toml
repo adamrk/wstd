@@ -20,6 +20,9 @@ json = ["dep:serde", "dep:serde_json"]
 p2 = ["dep:wasip2"]
 p3 = ["dep:wasip3"]
 
+[build-dependencies]
+cfg_aliases.workspace = true
+
 [dependencies]
 anyhow.workspace = true
 async-task.workspace = true
@@ -134,6 +137,7 @@ async-task = "4.7"
 axum = { version = "0.8.6", default-features = false }
 bytes = "1.10.1"
 cargo_metadata = "0.22"
+cfg_aliases = "0.2"
 clap = { version = "4.5.26", features = ["derive"] }
 futures-core = "0.3.19"
 futures-lite = "1.12.0"

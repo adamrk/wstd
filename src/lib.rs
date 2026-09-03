@@ -18,7 +18,7 @@
 //! **TCP echo server**
 //!
 //! ```rust,no_run
-#![cfg_attr(feature = "p2", doc = include_str!("../examples/tcp_echo_server.rs"))]
+#![cfg_attr(p2, doc = include_str!("../examples/tcp_echo_server.rs"))]
 //! ```
 //!
 //! **HTTP Client**
@@ -30,7 +30,7 @@
 //! **HTTP Server**
 //!
 //! ```rust,no_run
-#![cfg_attr(feature = "p2", doc = include_str!("../examples/http_server.rs"))]
+#![cfg_attr(p2, doc = include_str!("../examples/http_server.rs"))]
 //! ```
 //!
 //! # Design Decisions
@@ -56,33 +56,33 @@
 //! is specific to that are exposed from here.
 
 // Exactly one WASI backend must be selected. See the `p2`/`p3` features.
-#[cfg(all(feature = "p2", feature = "p3"))]
+#[cfg(all(p2, p3))]
 compile_error!(
     "the `p2` and `p3` features are mutually exclusive — enable exactly one WASI backend"
 );
-#[cfg(not(any(feature = "p2", feature = "p3")))]
+#[cfg(not(any(p2, p3)))]
 compile_error!("exactly one of the `p2` or `p3` features must be enabled");
 
-#[cfg(feature = "p2")]
+#[cfg(p2)]
 pub mod future;
-#[cfg(feature = "p2")]
+#[cfg(p2)]
 #[macro_use]
 pub mod http;
-#[cfg(feature = "p2")]
+#[cfg(p2)]
 pub mod io;
 pub mod iter;
-#[cfg(feature = "p2")]
+#[cfg(p2)]
 pub mod net;
-#[cfg(feature = "p2")]
+#[cfg(p2)]
 pub mod rand;
-#[cfg(feature = "p2")]
+#[cfg(p2)]
 pub mod runtime;
-#[cfg(feature = "p2")]
+#[cfg(p2)]
 pub mod task;
-#[cfg(feature = "p2")]
+#[cfg(p2)]
 pub mod time;
 
-#[cfg(feature = "p2")]
+#[cfg(p2)]
 pub use wstd_macro::{
     attr_macro_http_server as http_server, attr_macro_main as main, attr_macro_test as test,
 };
@@ -94,13 +94,13 @@ pub use wstd_macro::{
 // private.
 #[doc(hidden)]
 pub mod __internal {
-    #[cfg(feature = "p2")]
+    #[cfg(p2)]
     pub use wasip2;
-    #[cfg(feature = "p3")]
+    #[cfg(p3)]
     pub use wasip3;
 }
 
-#[cfg(feature = "p2")]
+#[cfg(p2)]
 pub mod prelude {
     pub use crate::future::FutureExt as _;
     pub use crate::io::AsyncRead as _;

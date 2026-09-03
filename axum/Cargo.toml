@@ -21,6 +21,9 @@ default = ["p2"]
 p2 = ["wstd/p2"]
 p3 = ["wstd/p3"]
 
+[build-dependencies]
+cfg_aliases.workspace = true
+
 [dev-dependencies]
 anyhow.workspace = true
 futures-concurrency.workspace = true
