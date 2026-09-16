@@ -1,7 +1,11 @@
 use super::{AsyncInputStream, AsyncOutputStream, AsyncRead, AsyncWrite, Result};
 use std::cell::LazyCell;
+#[cfg(target_env = "p2")]
 use wasip2::cli::terminal_input::TerminalInput;
+#[cfg(target_env = "p2")]
 use wasip2::cli::terminal_output::TerminalOutput;
+#[cfg(target_env = "p3")]
+use wasip3::cli::{terminal_input::TerminalInput, terminal_output::TerminalOutput};
 
 /// Use the program's stdin as an `AsyncInputStream`.
 #[derive(Debug)]
@@ -11,11 +15,21 @@ pub struct Stdin {
 }
 
 /// Get the program's stdin for use as an `AsyncInputStream`.
+#[cfg(target_env = "p2")]
 pub fn stdin() -> Stdin {
     let stream = AsyncInputStream::new(wasip2::cli::stdin::get_stdin());
     Stdin {
         stream,
         terminput: LazyCell::new(wasip2::cli::terminal_stdin::get_terminal_stdin),
+    }
+}
+
+#[cfg(target_env = "p3")]
+pub fn stdin() -> Stdin {
+    let (stream, _) = wasip3::cli::stdin::read_via_stream();
+    Stdin {
+        stream: AsyncInputStream::new(stream),
+        terminput: LazyCell::new(wasip3::cli::terminal_stdin::get_terminal_stdin),
     }
 }
 
@@ -56,11 +70,22 @@ pub struct Stdout {
 }
 
 /// Get the program's stdout for use as an `AsyncOutputStream`.
+#[cfg(target_env = "p2")]
 pub fn stdout() -> Stdout {
     let stream = AsyncOutputStream::new(wasip2::cli::stdout::get_stdout());
     Stdout {
         stream,
         termoutput: LazyCell::new(wasip2::cli::terminal_stdout::get_terminal_stdout),
+    }
+}
+
+#[cfg(target_env = "p3")]
+pub fn stdout() -> Stdout {
+    let (tx, rx) = wasip3::wit_stream::new();
+    wasip3::cli::stdout::write_via_stream(rx);
+    Stdout {
+        stream: AsyncOutputStream::new(tx),
+        termoutput: LazyCell::new(wasip3::cli::terminal_stdout::get_terminal_stdout),
     }
 }
 
@@ -106,11 +131,22 @@ pub struct Stderr {
 }
 
 /// Get the program's stdout for use as an `AsyncOutputStream`.
+#[cfg(target_env = "p2")]
 pub fn stderr() -> Stderr {
     let stream = AsyncOutputStream::new(wasip2::cli::stderr::get_stderr());
     Stderr {
         stream,
         termoutput: LazyCell::new(wasip2::cli::terminal_stderr::get_terminal_stderr),
+    }
+}
+
+#[cfg(target_env = "p3")]
+pub fn stderr() -> Stderr {
+    let (tx, rx) = wasip3::wit_stream::new();
+    wasip3::cli::stderr::write_via_stream(rx);
+    Stderr {
+        stream: AsyncOutputStream::new(tx),
+        termoutput: LazyCell::new(wasip3::cli::terminal_stderr::get_terminal_stderr),
     }
 }
 
