@@ -48,6 +48,7 @@ impl AsyncInputStream {
                     break;
                 }
             }
+            vec.clear();
         }
         Ok(written)
     }
@@ -263,5 +264,38 @@ impl AsyncWrite for AsyncOutputStream {
     #[inline]
     fn as_async_output_stream(&mut self) -> Option<&mut AsyncOutputStream> {
         Some(self)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn copy_to_works() {
+        crate::runtime::block_on(async {
+            let (mut source_writer, source_reader) = wasip3::wit_stream::new();
+            let (destination_writer, destination_reader) = wasip3::wit_stream::new();
+
+            let copy = crate::runtime::spawn(async move {
+                let mut source = AsyncInputStream::new(source_reader);
+                let mut destination = AsyncOutputStream::new(destination_writer);
+                let copied = source.copy_to(&mut destination).await.unwrap();
+                drop(destination);
+                copied
+            });
+            let collect = crate::runtime::spawn(destination_reader.collect());
+
+            assert!(source_writer.write_all(vec![1]).await.is_empty());
+            assert!(source_writer.write_all(vec![2]).await.is_empty());
+            assert!(source_writer.write_all(vec![3, 4, 5]).await.is_empty());
+            drop(source_writer);
+
+            let copied = copy.await;
+            let actual = collect.await;
+
+            assert_eq!(copied, 5);
+            assert_eq!(actual, [1, 2, 3, 4, 5]);
+        });
     }
 }
