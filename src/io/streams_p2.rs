@@ -78,7 +78,12 @@ impl AsyncInputStream {
     /// Use this `AsyncInputStream` as a `futures_lite::stream::Stream` with
     /// items of `Result<Vec<u8>, std::io::Error>`. The returned byte vectors
     /// will be at most the `chunk_size` argument specified.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `chunk_size` is zero.
     pub fn into_stream_of(self, chunk_size: usize) -> AsyncInputChunkStream {
+        assert!(chunk_size > 0, "chunk size must be non-zero");
         AsyncInputChunkStream {
             stream: self,
             chunk_size,
@@ -184,7 +189,7 @@ impl AsyncInputByteStream {
 }
 
 impl futures_lite::stream::Stream for AsyncInputByteStream {
-    type Item = Result<u8, std::io::Error>;
+    type Item = std::result::Result<u8, std::io::Error>;
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.project();
         match this.buffer.next() {
@@ -208,7 +213,6 @@ impl futures_lite::stream::Stream for AsyncInputByteStream {
         }
     }
 }
-
 /// A wrapper for WASI's `output-stream` resource that provides implementations of `AsyncWrite` and
 /// `AsyncPollable`.
 #[derive(Debug)]
