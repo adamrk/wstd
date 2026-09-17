@@ -7,7 +7,9 @@ mod read;
 mod seek;
 mod stdio;
 #[cfg(target_env = "p2")]
-mod streams;
+mod streams_p2;
+#[cfg(target_env = "p2")]
+use streams_p2 as streams;
 #[cfg(target_env = "p3")]
 mod streams_p3;
 #[cfg(target_env = "p3")]

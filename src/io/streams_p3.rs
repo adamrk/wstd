@@ -1,31 +1,93 @@
 use super::{AsyncRead, AsyncWrite};
 
-use wasip3::wit_bindgen::{StreamReader, StreamResult, StreamWriter};
+use wasip3::cli::types::ErrorCode;
+use wasip3::wit_bindgen::{FutureReader, StreamReader, StreamResult, StreamWriter};
 
 use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
+type CliCompletion = FutureReader<Result<(), ErrorCode>>;
+
+#[derive(Debug)]
+enum Completion {
+    Cli(CliCompletion),
+    #[cfg(test)]
+    Ready(std::io::Result<()>),
+}
+
+impl Completion {
+    async fn wait(self) -> std::io::Result<()> {
+        match self {
+            Self::Cli(completion) => completion.await.map_err(cli_error),
+            #[cfg(test)]
+            Self::Ready(result) => result,
+        }
+    }
+}
+
+fn cli_error(error: ErrorCode) -> std::io::Error {
+    let kind = match error {
+        ErrorCode::Io => std::io::ErrorKind::Other,
+        ErrorCode::IllegalByteSequence => std::io::ErrorKind::InvalidData,
+        ErrorCode::Pipe => std::io::ErrorKind::BrokenPipe,
+    };
+    std::io::Error::new(kind, format!("WASI CLI error: {error:?}"))
+}
+
 /// A wrapper for WASI's `InputStream` resource that provides implementations of `AsyncRead` and
 /// `AsyncPollable`.
 #[derive(Debug)]
 pub struct AsyncInputStream {
-    /// TODO: Should this also contain an error future to get the errors?
     stream: StreamReader<u8>,
+    completion: Option<Completion>,
 }
 
 impl AsyncInputStream {
     /// Construct an `AsyncInputStream` from a WASI `InputStream` resource.
     pub fn new(stream: StreamReader<u8>) -> Self {
-        Self { stream }
+        Self {
+            stream,
+            completion: None,
+        }
     }
 
-    /// TODO: None of these can return error actually.
+    pub(crate) fn with_completion(stream: StreamReader<u8>, completion: CliCompletion) -> Self {
+        Self {
+            stream,
+            completion: Some(Completion::Cli(completion)),
+        }
+    }
+
+    #[cfg(test)]
+    fn with_ready_completion(stream: StreamReader<u8>, completion: std::io::Result<()>) -> Self {
+        Self {
+            stream,
+            completion: Some(Completion::Ready(completion)),
+        }
+    }
+
+    async fn finish(&mut self) -> std::io::Result<()> {
+        match self.completion.take() {
+            Some(completion) => completion.wait().await,
+            None => Ok(()),
+        }
+    }
+
     pub async fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         let vec = Vec::with_capacity(buf.len());
-        let (_result, vec) = self.stream.read(vec).await;
-        buf[..vec.len()].copy_from_slice(&vec);
-        Ok(vec.len())
+        let (result, vec) = self.stream.read(vec).await;
+        match result {
+            StreamResult::Complete(_) => {
+                buf[..vec.len()].copy_from_slice(&vec);
+                Ok(vec.len())
+            }
+            StreamResult::Dropped => {
+                self.finish().await?;
+                Ok(0)
+            }
+            StreamResult::Cancelled => Err(std::io::ErrorKind::Interrupted.into()),
+        }
     }
 
     /// TODO: This requires `stream.forward` to avoid copying.
@@ -44,9 +106,11 @@ impl AsyncInputStream {
                     writer.write_all(&vec).await?;
                     written += r as u64;
                 }
-                StreamResult::Dropped | StreamResult::Cancelled => {
+                StreamResult::Dropped => {
+                    self.finish().await?;
                     break;
                 }
+                StreamResult::Cancelled => return Err(std::io::ErrorKind::Interrupted.into()),
             }
             vec.clear();
         }
@@ -59,7 +123,7 @@ impl AsyncInputStream {
     /// `Self::into_stream_of`.
     pub fn into_stream(self) -> AsyncInputChunkStream {
         AsyncInputChunkStream {
-            stream: self,
+            state: AsyncInputChunkStreamState::Ready(self),
             chunk_size: 8 * 1024,
         }
     }
@@ -69,7 +133,7 @@ impl AsyncInputStream {
     /// will be at most the `chunk_size` argument specified.
     pub fn into_stream_of(self, chunk_size: usize) -> AsyncInputChunkStream {
         AsyncInputChunkStream {
-            stream: self,
+            state: AsyncInputChunkStreamState::Ready(self),
             chunk_size,
         }
     }
@@ -95,41 +159,83 @@ impl AsyncRead for AsyncInputStream {
     }
 }
 
-/// It needs to be lent out to read. We could probably do it otherwise, but need a
-/// self referential pointer at least.
-///
 /// Wrapper of `AsyncInputStream` that impls `futures_lite::stream::Stream`
 /// with an item of `Result<Vec<u8>, std::io::Error>`
 pub struct AsyncInputChunkStream {
-    stream: AsyncInputStream,
+    state: AsyncInputChunkStreamState,
     chunk_size: usize,
 }
 
+enum AsyncInputChunkStreamState {
+    Ready(AsyncInputStream),
+    Reading(Pin<Box<dyn Future<Output = AsyncInputChunkReadResult>>>),
+    Done,
+}
+
+enum AsyncInputChunkReadResult {
+    Chunk {
+        chunk: Vec<u8>,
+        stream: AsyncInputStream,
+    },
+    Done(std::io::Result<()>),
+}
+
 impl AsyncInputChunkStream {
-    /// Extract the `AsyncInputStream` which backs this stream.
-    pub fn into_inner(self) -> AsyncInputStream {
-        self.stream
+    /// Extract the `AsyncInputStream` which backs this stream, if no read is in
+    /// progress and the stream has not ended.
+    pub fn into_inner(self) -> Option<AsyncInputStream> {
+        match self.state {
+            AsyncInputChunkStreamState::Ready(stream) => Some(stream),
+            AsyncInputChunkStreamState::Reading(_) | AsyncInputChunkStreamState::Done => None,
+        }
     }
 }
 
 impl futures_lite::stream::Stream for AsyncInputChunkStream {
     type Item = Result<Vec<u8>, std::io::Error>;
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        // TODO: reuse the vec instead of making a new one each time.
-        let vec = Vec::with_capacity(self.chunk_size);
-        // TODO: Should we start with a 0 read to check for readiness first?
-        let mut read = std::pin::pin!(self.stream.stream.read(vec));
-        // TODO: Should I do something with this poll result?
-        let _ = read.as_mut().poll(cx);
-        let (result, vec) = read.cancel();
-        if vec.is_empty() {
-            match result {
-                // TODO: double check these cases.
-                StreamResult::Dropped => Poll::Ready(None),
-                StreamResult::Cancelled | StreamResult::Complete(_) => Poll::Pending,
+        loop {
+            match &mut self.state {
+                AsyncInputChunkStreamState::Ready(_) => {
+                    let AsyncInputChunkStreamState::Ready(mut stream) =
+                        std::mem::replace(&mut self.state, AsyncInputChunkStreamState::Done)
+                    else {
+                        unreachable!();
+                    };
+                    let chunk_size = self.chunk_size;
+                    self.state = AsyncInputChunkStreamState::Reading(Box::pin(async move {
+                        let (result, chunk) =
+                            stream.stream.read(Vec::with_capacity(chunk_size)).await;
+                        match result {
+                            StreamResult::Complete(_) => {
+                                AsyncInputChunkReadResult::Chunk { chunk, stream }
+                            }
+                            StreamResult::Dropped => {
+                                AsyncInputChunkReadResult::Done(stream.finish().await)
+                            }
+                            StreamResult::Cancelled => AsyncInputChunkReadResult::Done(Err(
+                                std::io::ErrorKind::Interrupted.into(),
+                            )),
+                        }
+                    }));
+                }
+                AsyncInputChunkStreamState::Reading(read) => {
+                    match std::task::ready!(read.as_mut().poll(cx)) {
+                        AsyncInputChunkReadResult::Chunk { chunk, stream } => {
+                            self.state = AsyncInputChunkStreamState::Ready(stream);
+                            return Poll::Ready(Some(Ok(chunk)));
+                        }
+                        AsyncInputChunkReadResult::Done(result) => {
+                            self.state = AsyncInputChunkStreamState::Done;
+                            return match result {
+                                Ok(()) => Poll::Ready(None),
+                                Err(error) => Poll::Ready(Some(Err(error))),
+                            };
+                        }
+                    }
+                }
+                AsyncInputChunkStreamState::Done => return Poll::Ready(None),
             }
-        } else {
-            Poll::Ready(Some(Ok(vec)))
         }
     }
 }
@@ -147,14 +253,14 @@ pin_project_lite::pin_project! {
 impl AsyncInputByteStream {
     /// Extract the `AsyncInputStream` which backs this stream, and any bytes
     /// read from the `AsyncInputStream` which have not yet been yielded by
-    /// the byte stream.
-    pub fn into_inner(self) -> (AsyncInputStream, Vec<u8>) {
-        (
-            self.stream.into_inner(),
+    /// the byte stream, if no read is in progress and the stream has not ended.
+    pub fn into_inner(self) -> Option<(AsyncInputStream, Vec<u8>)> {
+        Some((
+            self.stream.into_inner()?,
             self.buffer
                 .collect::<Result<Vec<u8>, std::io::Error>>()
                 .expect("read of Cursor<Vec<u8>> is infallible"),
-        )
+        ))
     }
 }
 
@@ -189,12 +295,41 @@ impl futures_lite::stream::Stream for AsyncInputByteStream {
 #[derive(Debug)]
 pub struct AsyncOutputStream {
     stream: StreamWriter<u8>,
+    completion: Option<Completion>,
 }
 
 impl AsyncOutputStream {
     /// Construct an `AsyncOutputStream` from a WASI `OutputStream` resource.
     pub fn new(stream: StreamWriter<u8>) -> Self {
-        Self { stream }
+        Self {
+            stream,
+            completion: None,
+        }
+    }
+
+    pub(crate) fn with_completion(stream: StreamWriter<u8>, completion: CliCompletion) -> Self {
+        Self {
+            stream,
+            completion: Some(Completion::Cli(completion)),
+        }
+    }
+
+    #[cfg(test)]
+    fn with_ready_completion(stream: StreamWriter<u8>, completion: std::io::Result<()>) -> Self {
+        Self {
+            stream,
+            completion: Some(Completion::Ready(completion)),
+        }
+    }
+
+    async fn closed_error(&mut self) -> std::io::Error {
+        match self.completion.take() {
+            Some(completion) => match completion.wait().await {
+                Ok(()) => std::io::ErrorKind::ConnectionReset.into(),
+                Err(error) => error,
+            },
+            None => std::io::ErrorKind::ConnectionReset.into(),
+        }
     }
     /// Asynchronously write to the output stream. This method is the same as
     /// [`AsyncWrite::write`], but doesn't require a `&mut self`.
@@ -207,32 +342,22 @@ impl AsyncOutputStream {
     pub async fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         let mut vec = Vec::with_capacity(buf.len());
         vec.extend_from_slice(buf);
-        let (_result, abi_buf) = self.stream.write(vec).await;
-        let sent = buf.len() - abi_buf.remaining();
-        Ok(sent)
+        let (result, _abi_buf) = self.stream.write(vec).await;
+        match result {
+            StreamResult::Complete(sent) => Ok(sent),
+            StreamResult::Dropped => Err(self.closed_error().await),
+            StreamResult::Cancelled => Err(std::io::ErrorKind::Interrupted.into()),
+        }
     }
 
     /// Asynchronously write to the output stream. This method is the same as
     /// [`AsyncWrite::write_all`], but doesn't require a `&mut self`.
     pub async fn write_all(&mut self, buf: &[u8]) -> std::io::Result<()> {
-        let mut vec = Vec::with_capacity(buf.len());
-        vec.extend_from_slice(buf);
-        let (mut status, mut abi_buf) = self.stream.write(vec).await;
-        loop {
-            match status {
-                StreamResult::Cancelled | StreamResult::Dropped => break,
-                StreamResult::Complete(_) if abi_buf.remaining() == 0 => break,
-                // TODO: Can we see a Complete 0 when we didn't send 0?
-                StreamResult::Complete(_) => {}
-            }
-            let (result, new_buf) = self.stream.write_buf(abi_buf).await;
-            status = result;
-            abi_buf = new_buf;
-        }
-        if abi_buf.remaining() != 0 {
-            Err(std::io::Error::from(std::io::ErrorKind::ConnectionReset))
-        } else {
+        let remaining = self.stream.write_all(buf.to_vec()).await;
+        if remaining.is_empty() {
             Ok(())
+        } else {
+            Err(self.closed_error().await)
         }
     }
 
@@ -270,6 +395,87 @@ impl AsyncWrite for AsyncOutputStream {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures_lite::StreamExt;
+
+    #[test]
+    fn chunk_stream_keeps_pending_read_alive() {
+        crate::runtime::block_on(async {
+            let (mut writer, reader) = wasip3::wit_stream::new();
+            let read = crate::runtime::spawn(async move {
+                let mut chunks = AsyncInputStream::new(reader).into_stream_of(4);
+                let chunk = chunks.next().await.unwrap().unwrap();
+                let end = chunks.next().await;
+                (chunk, end)
+            });
+
+            assert!(writer.write_all(vec![1, 2]).await.is_empty());
+            drop(writer);
+
+            let (chunk, end) = read.await;
+            assert_eq!(chunk, [1, 2]);
+            assert!(end.is_none());
+        });
+    }
+
+    #[test]
+    fn input_stream_reports_cli_completion_error() {
+        crate::runtime::block_on(async {
+            let (writer, reader) = wasip3::wit_stream::new();
+            drop(writer);
+
+            let mut input = AsyncInputStream::with_ready_completion(
+                reader,
+                Err(cli_error(ErrorCode::IllegalByteSequence)),
+            );
+            let error = input.read(&mut [0; 1]).await.unwrap_err();
+
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        });
+    }
+
+    #[test]
+    fn output_stream_reports_cli_completion_error() {
+        crate::runtime::block_on(async {
+            let (writer, reader) = wasip3::wit_stream::new();
+            drop(reader);
+
+            let mut output =
+                AsyncOutputStream::with_ready_completion(writer, Err(cli_error(ErrorCode::Pipe)));
+            let error = output.write(&[1]).await.unwrap_err();
+
+            assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe);
+        });
+    }
+
+    #[test]
+    fn output_stream_reports_closed_reader() {
+        crate::runtime::block_on(async {
+            let (writer, reader) = wasip3::wit_stream::new();
+            drop(reader);
+
+            let error = AsyncOutputStream::new(writer)
+                .write(&[1])
+                .await
+                .unwrap_err();
+
+            assert_eq!(error.kind(), std::io::ErrorKind::ConnectionReset);
+        });
+    }
+
+    #[test]
+    fn output_stream_write_all_sends_entire_buffer() {
+        crate::runtime::block_on(async {
+            let (writer, reader) = wasip3::wit_stream::new();
+            let collect = crate::runtime::spawn(reader.collect());
+            let expected: Vec<_> = (0..=255).collect();
+            let mut output = AsyncOutputStream::new(writer);
+
+            output.write_all(&expected).await.unwrap();
+            drop(output);
+
+            assert_eq!(collect.await, expected);
+        });
+    }
 
     #[test]
     fn copy_to_works() {

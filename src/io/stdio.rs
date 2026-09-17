@@ -26,9 +26,9 @@ pub fn stdin() -> Stdin {
 
 #[cfg(target_env = "p3")]
 pub fn stdin() -> Stdin {
-    let (stream, _) = wasip3::cli::stdin::read_via_stream();
+    let (stream, completion) = wasip3::cli::stdin::read_via_stream();
     Stdin {
-        stream: AsyncInputStream::new(stream),
+        stream: AsyncInputStream::with_completion(stream, completion),
         terminput: LazyCell::new(wasip3::cli::terminal_stdin::get_terminal_stdin),
     }
 }
@@ -82,9 +82,9 @@ pub fn stdout() -> Stdout {
 #[cfg(target_env = "p3")]
 pub fn stdout() -> Stdout {
     let (tx, rx) = wasip3::wit_stream::new();
-    wasip3::cli::stdout::write_via_stream(rx);
+    let completion = wasip3::cli::stdout::write_via_stream(rx);
     Stdout {
-        stream: AsyncOutputStream::new(tx),
+        stream: AsyncOutputStream::with_completion(tx, completion),
         termoutput: LazyCell::new(wasip3::cli::terminal_stdout::get_terminal_stdout),
     }
 }
@@ -143,9 +143,9 @@ pub fn stderr() -> Stderr {
 #[cfg(target_env = "p3")]
 pub fn stderr() -> Stderr {
     let (tx, rx) = wasip3::wit_stream::new();
-    wasip3::cli::stderr::write_via_stream(rx);
+    let completion = wasip3::cli::stderr::write_via_stream(rx);
     Stderr {
-        stream: AsyncOutputStream::new(tx),
+        stream: AsyncOutputStream::with_completion(tx, completion),
         termoutput: LazyCell::new(wasip3::cli::terminal_stderr::get_terminal_stderr),
     }
 }
