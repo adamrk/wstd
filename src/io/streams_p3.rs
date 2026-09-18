@@ -1,77 +1,22 @@
 use super::{AsyncRead, AsyncWrite};
 
-use wasip3::cli::types::ErrorCode;
-use wasip3::wit_bindgen::{FutureReader, StreamReader, StreamResult, StreamWriter};
+use wasip3::wit_bindgen::{StreamReader, StreamResult, StreamWriter};
 
 use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
-
-type CliCompletion = FutureReader<Result<(), ErrorCode>>;
-
-#[derive(Debug)]
-enum Completion {
-    Cli(CliCompletion),
-    #[cfg(test)]
-    Ready(std::io::Result<()>),
-}
-
-impl Completion {
-    async fn wait(self) -> std::io::Result<()> {
-        match self {
-            Self::Cli(completion) => completion.await.map_err(cli_error),
-            #[cfg(test)]
-            Self::Ready(result) => result,
-        }
-    }
-}
-
-fn cli_error(error: ErrorCode) -> std::io::Error {
-    let kind = match error {
-        ErrorCode::Io => std::io::ErrorKind::Other,
-        ErrorCode::IllegalByteSequence => std::io::ErrorKind::InvalidData,
-        ErrorCode::Pipe => std::io::ErrorKind::BrokenPipe,
-    };
-    std::io::Error::new(kind, format!("WASI CLI error: {error:?}"))
-}
 
 /// A wrapper for WASI's `InputStream` resource that provides implementations of `AsyncRead` and
 /// `AsyncPollable`.
 #[derive(Debug)]
 pub struct AsyncInputStream {
     stream: StreamReader<u8>,
-    completion: Option<Completion>,
 }
 
 impl AsyncInputStream {
     /// Construct an `AsyncInputStream` from a WASI `InputStream` resource.
     pub fn new(stream: StreamReader<u8>) -> Self {
-        Self {
-            stream,
-            completion: None,
-        }
-    }
-
-    pub(crate) fn with_completion(stream: StreamReader<u8>, completion: CliCompletion) -> Self {
-        Self {
-            stream,
-            completion: Some(Completion::Cli(completion)),
-        }
-    }
-
-    #[cfg(test)]
-    fn with_ready_completion(stream: StreamReader<u8>, completion: std::io::Result<()>) -> Self {
-        Self {
-            stream,
-            completion: Some(Completion::Ready(completion)),
-        }
-    }
-
-    async fn finish(&mut self) -> std::io::Result<()> {
-        match self.completion.take() {
-            Some(completion) => completion.wait().await,
-            None => Ok(()),
-        }
+        Self { stream }
     }
 
     pub async fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
@@ -82,10 +27,7 @@ impl AsyncInputStream {
                 buf[..vec.len()].copy_from_slice(&vec);
                 Ok(vec.len())
             }
-            StreamResult::Dropped => {
-                self.finish().await?;
-                Ok(0)
-            }
+            StreamResult::Dropped => Ok(0),
             StreamResult::Cancelled => Err(std::io::ErrorKind::Interrupted.into()),
         }
     }
@@ -106,10 +48,7 @@ impl AsyncInputStream {
                     writer.write_all(&vec).await?;
                     written += r as u64;
                 }
-                StreamResult::Dropped => {
-                    self.finish().await?;
-                    break;
-                }
+                StreamResult::Dropped => break,
                 StreamResult::Cancelled => return Err(std::io::ErrorKind::Interrupted.into()),
             }
             vec.clear();
@@ -210,9 +149,7 @@ impl futures_lite::stream::Stream for AsyncInputChunkStream {
                             StreamResult::Complete(_) => {
                                 AsyncInputChunkReadResult::Chunk { chunk, stream }
                             }
-                            StreamResult::Dropped => {
-                                AsyncInputChunkReadResult::Done(stream.finish().await)
-                            }
+                            StreamResult::Dropped => AsyncInputChunkReadResult::Done(Ok(())),
                             StreamResult::Cancelled => AsyncInputChunkReadResult::Done(Err(
                                 std::io::ErrorKind::Interrupted.into(),
                             )),
@@ -294,43 +231,21 @@ impl futures_lite::stream::Stream for AsyncInputByteStream {
 /// `AsyncPollable`.
 #[derive(Debug)]
 pub struct AsyncOutputStream {
-    stream: StreamWriter<u8>,
-    completion: Option<Completion>,
+    stream: Option<StreamWriter<u8>>,
 }
 
 impl AsyncOutputStream {
     /// Construct an `AsyncOutputStream` from a WASI `OutputStream` resource.
     pub fn new(stream: StreamWriter<u8>) -> Self {
         Self {
-            stream,
-            completion: None,
+            stream: Some(stream),
         }
     }
 
-    pub(crate) fn with_completion(stream: StreamWriter<u8>, completion: CliCompletion) -> Self {
-        Self {
-            stream,
-            completion: Some(Completion::Cli(completion)),
-        }
+    pub(crate) fn close(&mut self) {
+        self.stream.take();
     }
 
-    #[cfg(test)]
-    fn with_ready_completion(stream: StreamWriter<u8>, completion: std::io::Result<()>) -> Self {
-        Self {
-            stream,
-            completion: Some(Completion::Ready(completion)),
-        }
-    }
-
-    async fn closed_error(&mut self) -> std::io::Error {
-        match self.completion.take() {
-            Some(completion) => match completion.wait().await {
-                Ok(()) => std::io::ErrorKind::ConnectionReset.into(),
-                Err(error) => error,
-            },
-            None => std::io::ErrorKind::ConnectionReset.into(),
-        }
-    }
     /// Asynchronously write to the output stream. This method is the same as
     /// [`AsyncWrite::write`], but doesn't require a `&mut self`.
     ///
@@ -340,12 +255,15 @@ impl AsyncOutputStream {
     /// using the debug string provided by the WASI error, or else that the,
     /// indicated by `std::io::ErrorKind::ConnectionReset`.
     pub async fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let Some(stream) = self.stream.as_mut() else {
+            return Err(std::io::ErrorKind::ConnectionReset.into());
+        };
         let mut vec = Vec::with_capacity(buf.len());
         vec.extend_from_slice(buf);
-        let (result, _abi_buf) = self.stream.write(vec).await;
+        let (result, _abi_buf) = stream.write(vec).await;
         match result {
             StreamResult::Complete(sent) => Ok(sent),
-            StreamResult::Dropped => Err(self.closed_error().await),
+            StreamResult::Dropped => Err(std::io::ErrorKind::ConnectionReset.into()),
             StreamResult::Cancelled => Err(std::io::ErrorKind::Interrupted.into()),
         }
     }
@@ -353,26 +271,23 @@ impl AsyncOutputStream {
     /// Asynchronously write to the output stream. This method is the same as
     /// [`AsyncWrite::write_all`], but doesn't require a `&mut self`.
     pub async fn write_all(&mut self, buf: &[u8]) -> std::io::Result<()> {
-        let remaining = self.stream.write_all(buf.to_vec()).await;
+        let Some(stream) = self.stream.as_mut() else {
+            return Err(std::io::ErrorKind::ConnectionReset.into());
+        };
+        let remaining = stream.write_all(buf.to_vec()).await;
         if remaining.is_empty() {
             Ok(())
         } else {
-            Err(self.closed_error().await)
+            Err(std::io::ErrorKind::ConnectionReset.into())
         }
     }
 
-    /// Asyncronously flush the output stream. Initiates a flush, and then
-    /// awaits until the flush is complete and the output stream is ready for
-    /// writing again.
-    ///
-    /// This method is the same as [`AsyncWrite::flush`], but doesn't require
-    /// a `&mut self`.
-    ///
-    /// Fails with a `std::io::Error` indicating either an error returned by
-    /// the stream flush, using the debug string provided by the WASI error,
-    /// or else that the stream is closed, indicated by
-    /// `std::io::ErrorKind::ConnectionReset`.
-    pub async fn flush(&self) -> std::io::Result<()> {
+    /// This is a no-op on p3 streams. Use interface-specific flush methods
+    /// when available.
+    #[deprecated(
+        note = "this is a no-op on generic p3 streams; use interface-specific flush methods when available"
+    )]
+    pub async fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
     }
 }
@@ -382,6 +297,7 @@ impl AsyncWrite for AsyncOutputStream {
     async fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         Self::write(self, buf).await
     }
+    #[allow(deprecated)]
     async fn flush(&mut self) -> std::io::Result<()> {
         Self::flush(self).await
     }
@@ -414,36 +330,6 @@ mod tests {
             let (chunk, end) = read.await;
             assert_eq!(chunk, [1, 2]);
             assert!(end.is_none());
-        });
-    }
-
-    #[test]
-    fn input_stream_reports_cli_completion_error() {
-        crate::runtime::block_on(async {
-            let (writer, reader) = wasip3::wit_stream::new();
-            drop(writer);
-
-            let mut input = AsyncInputStream::with_ready_completion(
-                reader,
-                Err(cli_error(ErrorCode::IllegalByteSequence)),
-            );
-            let error = input.read(&mut [0; 1]).await.unwrap_err();
-
-            assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
-        });
-    }
-
-    #[test]
-    fn output_stream_reports_cli_completion_error() {
-        crate::runtime::block_on(async {
-            let (writer, reader) = wasip3::wit_stream::new();
-            drop(reader);
-
-            let mut output =
-                AsyncOutputStream::with_ready_completion(writer, Err(cli_error(ErrorCode::Pipe)));
-            let error = output.write(&[1]).await.unwrap_err();
-
-            assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe);
         });
     }
 

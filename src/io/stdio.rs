@@ -6,6 +6,21 @@ use wasip2::cli::terminal_input::TerminalInput;
 use wasip2::cli::terminal_output::TerminalOutput;
 #[cfg(target_env = "p3")]
 use wasip3::cli::{terminal_input::TerminalInput, terminal_output::TerminalOutput};
+#[cfg(target_env = "p3")]
+use wasip3::{cli::types::ErrorCode, wit_bindgen::FutureReader};
+
+#[cfg(target_env = "p3")]
+type CliCompletion = FutureReader<std::result::Result<(), ErrorCode>>;
+
+#[cfg(target_env = "p3")]
+fn cli_error(error: ErrorCode) -> std::io::Error {
+    let kind = match error {
+        ErrorCode::Io => std::io::ErrorKind::Other,
+        ErrorCode::IllegalByteSequence => std::io::ErrorKind::InvalidData,
+        ErrorCode::Pipe => std::io::ErrorKind::BrokenPipe,
+    };
+    std::io::Error::new(kind, format!("WASI CLI error: {error:?}"))
+}
 
 /// Use the program's stdin as an `AsyncInputStream`.
 #[derive(Debug)]
@@ -26,9 +41,9 @@ pub fn stdin() -> Stdin {
 
 #[cfg(target_env = "p3")]
 pub fn stdin() -> Stdin {
-    let (stream, completion) = wasip3::cli::stdin::read_via_stream();
+    let (stream, _) = wasip3::cli::stdin::read_via_stream();
     Stdin {
-        stream: AsyncInputStream::with_completion(stream, completion),
+        stream: AsyncInputStream::new(stream),
         terminput: LazyCell::new(wasip3::cli::terminal_stdin::get_terminal_stdin),
     }
 }
@@ -66,6 +81,8 @@ impl AsyncRead for Stdin {
 #[derive(Debug)]
 pub struct Stdout {
     stream: AsyncOutputStream,
+    #[cfg(target_env = "p3")]
+    completion: Option<CliCompletion>,
     termoutput: LazyCell<Option<TerminalOutput>>,
 }
 
@@ -84,7 +101,8 @@ pub fn stdout() -> Stdout {
     let (tx, rx) = wasip3::wit_stream::new();
     let completion = wasip3::cli::stdout::write_via_stream(rx);
     Stdout {
-        stream: AsyncOutputStream::with_completion(tx, completion),
+        stream: AsyncOutputStream::new(tx),
+        completion: Some(completion),
         termoutput: LazyCell::new(wasip3::cli::terminal_stdout::get_terminal_stdout),
     }
 }
@@ -99,6 +117,23 @@ impl Stdout {
     pub fn into_inner(self) -> AsyncOutputStream {
         self.stream
     }
+
+    /// Flush stdout by closing its stream, waiting for the operation to
+    /// complete, and opening a new stream for subsequent writes.
+    #[cfg(target_env = "p3")]
+    pub async fn flush(&mut self) -> Result<()> {
+        self.stream.close();
+        let result = match self.completion.take() {
+            Some(completion) => completion.await.map_err(cli_error),
+            None => Ok(()),
+        };
+
+        let (tx, rx) = wasip3::wit_stream::new();
+        self.stream = AsyncOutputStream::new(tx);
+        self.completion = Some(wasip3::cli::stdout::write_via_stream(rx));
+
+        result
+    }
 }
 
 impl AsyncWrite for Stdout {
@@ -108,8 +143,16 @@ impl AsyncWrite for Stdout {
     }
 
     #[inline]
+    #[allow(deprecated)]
     async fn flush(&mut self) -> Result<()> {
-        self.stream.flush().await
+        #[cfg(target_env = "p2")]
+        {
+            self.stream.flush().await
+        }
+        #[cfg(target_env = "p3")]
+        {
+            Self::flush(self).await
+        }
     }
 
     #[inline]
@@ -127,6 +170,8 @@ impl AsyncWrite for Stdout {
 #[derive(Debug)]
 pub struct Stderr {
     stream: AsyncOutputStream,
+    #[cfg(target_env = "p3")]
+    completion: Option<CliCompletion>,
     termoutput: LazyCell<Option<TerminalOutput>>,
 }
 
@@ -145,7 +190,8 @@ pub fn stderr() -> Stderr {
     let (tx, rx) = wasip3::wit_stream::new();
     let completion = wasip3::cli::stderr::write_via_stream(rx);
     Stderr {
-        stream: AsyncOutputStream::with_completion(tx, completion),
+        stream: AsyncOutputStream::new(tx),
+        completion: Some(completion),
         termoutput: LazyCell::new(wasip3::cli::terminal_stderr::get_terminal_stderr),
     }
 }
@@ -160,6 +206,23 @@ impl Stderr {
     pub fn into_inner(self) -> AsyncOutputStream {
         self.stream
     }
+
+    /// Flush stderr by closing its stream, waiting for the operation to
+    /// complete, and opening a new stream for subsequent writes.
+    #[cfg(target_env = "p3")]
+    pub async fn flush(&mut self) -> Result<()> {
+        self.stream.close();
+        let result = match self.completion.take() {
+            Some(completion) => completion.await.map_err(cli_error),
+            None => Ok(()),
+        };
+
+        let (tx, rx) = wasip3::wit_stream::new();
+        self.stream = AsyncOutputStream::new(tx);
+        self.completion = Some(wasip3::cli::stderr::write_via_stream(rx));
+
+        result
+    }
 }
 
 impl AsyncWrite for Stderr {
@@ -169,8 +232,16 @@ impl AsyncWrite for Stderr {
     }
 
     #[inline]
+    #[allow(deprecated)]
     async fn flush(&mut self) -> Result<()> {
-        self.stream.flush().await
+        #[cfg(target_env = "p2")]
+        {
+            self.stream.flush().await
+        }
+        #[cfg(target_env = "p3")]
+        {
+            Self::flush(self).await
+        }
     }
 
     #[inline]
@@ -198,18 +269,20 @@ mod test {
                 .write_all(format!("hello, world! stdout {term} a terminal\n",).as_bytes())
                 .await
                 .unwrap();
+            stdout.flush().await.unwrap();
         })
     }
     #[test]
     // No internal predicate. Run test with --nocapture and inspect output manually.
     fn stderr_println_hello_world() {
         block_on(async {
-            let mut stdout = super::stdout();
-            let term = if stdout.is_terminal() { "is" } else { "is not" };
-            stdout
+            let mut stderr = super::stderr();
+            let term = if stderr.is_terminal() { "is" } else { "is not" };
+            stderr
                 .write_all(format!("hello, world! stderr {term} a terminal\n",).as_bytes())
                 .await
                 .unwrap();
+            stderr.flush().await.unwrap();
         })
     }
 }

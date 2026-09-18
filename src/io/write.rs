@@ -4,6 +4,12 @@ use crate::io;
 pub trait AsyncWrite {
     // Required methods
     async fn write(&mut self, buf: &[u8]) -> io::Result<usize>;
+    #[cfg_attr(
+        target_env = "p3",
+        deprecated(
+            note = "this is a no-op on generic p3 streams; use interface-specific flush methods when available"
+        )
+    )]
     async fn flush(&mut self) -> io::Result<()>;
 
     async fn write_all(&mut self, buf: &[u8]) -> io::Result<()> {
@@ -32,6 +38,7 @@ impl<W: AsyncWrite + ?Sized> AsyncWrite for &mut W {
     }
 
     #[inline]
+    #[allow(deprecated)]
     async fn flush(&mut self) -> io::Result<()> {
         (**self).flush().await
     }
