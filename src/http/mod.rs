@@ -13,6 +13,10 @@ pub use request::Request;
 pub use response::Response;
 pub use scheme::{InvalidUri, Scheme};
 
+#[cfg(target_env = "p2")]
+pub mod body;
+#[cfg(target_env = "p3")]
+#[path = "body_p3.rs"]
 pub mod body;
 
 mod client;

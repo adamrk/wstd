@@ -14,12 +14,15 @@
 //!
 //! [typed main]: https://sunfishcode.github.io/typed-main-wasi-presentation/chapter_1.html
 //! [`Request`]: crate::http::Request
-//! [`Responder`]: crate::http::server::Responder
 //! [`Response`]: crate::http::Response
 //! [`http_server`]: crate::http_server
 
-use super::{Body, Error, Response, error::ErrorCode, fields::header_map_to_wasi};
+#[cfg(target_env = "p2")]
+use super::fields::header_map_to_wasi;
+use super::{Body, Error, Response, error::ErrorCode};
+#[cfg(target_env = "p2")]
 use wasip2::exports::http::incoming_handler::ResponseOutparam;
+#[cfg(target_env = "p2")]
 use wasip2::http::types::OutgoingResponse;
 
 /// For use by the [`http_server`] macro only.
@@ -27,10 +30,12 @@ use wasip2::http::types::OutgoingResponse;
 /// [`http_server`]: crate::http_server
 #[doc(hidden)]
 #[must_use]
+#[cfg(target_env = "p2")]
 pub struct Responder {
     outparam: ResponseOutparam,
 }
 
+#[cfg(target_env = "p2")]
 impl Responder {
     /// This is used by the `http_server` macro.
     #[doc(hidden)]
@@ -75,4 +80,24 @@ impl Responder {
         };
         ResponseOutparam::set(self.outparam, Err(e));
     }
+}
+
+/// Convert a wstd response into a WASI 0.3 response.
+#[doc(hidden)]
+#[cfg(target_env = "p3")]
+pub fn try_into_outgoing<B>(response: Response<B>) -> Result<wasip3::http::types::Response, Error>
+where
+    B: Into<Body>,
+{
+    wasip3::http_compat::http_into_wasi_response(response.map(Into::into)).map_err(Into::into)
+}
+
+/// Convert an application error into a WASI HTTP error code.
+#[doc(hidden)]
+#[cfg(target_env = "p3")]
+pub fn error_code(error: Error) -> ErrorCode {
+    error
+        .downcast_ref::<ErrorCode>()
+        .cloned()
+        .unwrap_or_else(|| ErrorCode::InternalError(Some(format!("{error:?}"))))
 }
