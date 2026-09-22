@@ -32,6 +32,7 @@ impl<W: AsyncWrite + ?Sized> AsyncWrite for &mut W {
     }
 
     #[inline]
+    #[allow(deprecated)]
     async fn flush(&mut self) -> io::Result<()> {
         (**self).flush().await
     }
