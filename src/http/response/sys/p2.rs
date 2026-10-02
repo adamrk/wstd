@@ -1,16 +1,12 @@
-#[cfg(target_env = "p2")]
 use http::StatusCode;
-#[cfg(target_env = "p2")]
 use wasip2::http::types::IncomingResponse;
 
 use crate::http::body::{Body, BodyHint};
 use crate::http::error::Error;
-#[cfg(target_env = "p2")]
 use crate::http::fields::{HeaderMap, header_map_from_wasi};
 
 pub use http::response::{Builder, Response};
 
-#[cfg(target_env = "p2")]
 pub(crate) fn try_from_incoming(incoming: IncomingResponse) -> Result<Response<Body>, Error> {
     let headers: HeaderMap = header_map_from_wasi(incoming.headers())?;
     // TODO: Does WASI guarantee that the incoming status is valid?
@@ -39,13 +35,4 @@ pub(crate) fn try_from_incoming(incoming: IncomingResponse) -> Result<Response<B
     Ok(builder
         .body(body)
         .expect("response builder should not error"))
-}
-
-#[cfg(target_env = "p3")]
-pub(crate) fn try_from_incoming(
-    incoming: wasip3::http::types::Response,
-) -> Result<Response<Body>, Error> {
-    let response = wasip3::http_compat::http_from_wasi_response(incoming)?;
-    let hint = BodyHint::from_headers(response.headers())?;
-    Ok(response.map(|body| Body::from_incoming(body, hint)))
 }

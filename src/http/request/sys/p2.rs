@@ -1,25 +1,17 @@
-#[cfg(target_env = "p2")]
-use super::{
+use crate::http::{
     Authority, HeaderMap, PathAndQuery, Uri,
-    error::{Context, ErrorCode},
+    body::{Body, BodyHint},
+    error::{Context, Error, ErrorCode},
     fields::{header_map_from_wasi, header_map_to_wasi},
     method::{from_wasi_method, to_wasi_method},
     scheme::{from_wasi_scheme, to_wasi_scheme},
 };
-use super::{
-    body::{Body, BodyHint},
-    error::Error,
-};
-#[cfg(target_env = "p2")]
 use wasip2::http::outgoing_handler::OutgoingRequest;
-#[cfg(target_env = "p2")]
 use wasip2::http::types::IncomingRequest;
 
 pub use http::request::{Builder, Request};
 
 // TODO: go back and add json stuff???
-
-#[cfg(target_env = "p2")]
 pub(crate) fn try_into_outgoing<T>(request: Request<T>) -> Result<(OutgoingRequest, T), Error> {
     let wasi_req = OutgoingRequest::new(header_map_to_wasi(request.headers())?);
 
@@ -60,7 +52,6 @@ pub(crate) fn try_into_outgoing<T>(request: Request<T>) -> Result<(OutgoingReque
 
 /// This is used by the `http_server` macro.
 #[doc(hidden)]
-#[cfg(target_env = "p2")]
 pub fn try_from_incoming(incoming: IncomingRequest) -> Result<Request<Body>, Error> {
     let headers: HeaderMap = header_map_from_wasi(incoming.headers())
         .context("headers provided by wasi rejected by http::HeaderMap")?;
@@ -114,25 +105,4 @@ pub fn try_from_incoming(incoming: IncomingRequest) -> Result<Request<Body>, Err
         *headers_mut = headers;
     }
     request.body(body).context("building request from wasi")
-}
-
-#[cfg(target_env = "p3")]
-pub(crate) fn try_into_outgoing<T>(
-    request: Request<T>,
-) -> Result<wasip3::http::types::Request, Error>
-where
-    T: http_body::Body + std::any::Any,
-    T::Data: Into<Vec<u8>>,
-    T::Error: Into<Box<dyn std::error::Error + Send + Sync + 'static>>,
-{
-    wasip3::http_compat::http_into_wasi_request(request).map_err(Into::into)
-}
-
-/// Convert an incoming WASI HTTP request into a wstd request.
-#[doc(hidden)]
-#[cfg(target_env = "p3")]
-pub fn try_from_incoming(incoming: wasip3::http::types::Request) -> Result<Request<Body>, Error> {
-    let request = wasip3::http_compat::http_from_wasi_request(incoming)?;
-    let hint = BodyHint::from_headers(request.headers())?;
-    Ok(request.map(|body| Body::from_incoming(body, hint)))
 }

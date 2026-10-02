@@ -1,10 +1,7 @@
-pub use http::Method;
-#[cfg(target_env = "p2")]
+pub use super::Method;
 use http::method::InvalidMethod;
-#[cfg(target_env = "p2")]
 use wasip2::http::types::Method as WasiMethod;
 
-#[cfg(target_env = "p2")]
 pub(crate) fn to_wasi_method(value: Method) -> WasiMethod {
     match value {
         Method::GET => WasiMethod::Get,
@@ -20,7 +17,6 @@ pub(crate) fn to_wasi_method(value: Method) -> WasiMethod {
     }
 }
 
-#[cfg(target_env = "p2")]
 pub(crate) fn from_wasi_method(value: WasiMethod) -> Result<Method, InvalidMethod> {
     Ok(match value {
         WasiMethod::Get => Method::GET,

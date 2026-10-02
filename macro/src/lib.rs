@@ -168,11 +168,11 @@ pub fn attr_macro_http_server(_attr: TokenStream, item: TokenStream) -> TokenStr
                 }
 
                 let request = ::wstd::http::request::try_from_incoming(request)
-                    .map_err(::wstd::http::server::error_code)?;
+                    .map_err(::wstd::http::response::error_code)?;
                 let response = __run(request) #run_await
-                    .map_err(::wstd::http::server::error_code)?;
-                ::wstd::http::server::try_into_outgoing(response)
-                    .map_err(::wstd::http::server::error_code)
+                    .map_err(::wstd::http::response::error_code)?;
+                ::wstd::http::response::try_into_outgoing(response)
+                    .map_err(::wstd::http::response::error_code)
             }
         }
 
